@@ -1,5 +1,7 @@
 ﻿using LanPlayServer.Network;
 using LanPlayServer.Network.Types;
+using LanPlayServer.Stats;
+using LanPlayServer.Stats.Types;
 using LanPlayServer.Utils;
 using Ryujinx.HLE.HOS.Services.Ldn.Types;
 using System;
@@ -32,7 +34,9 @@ namespace LanPlayServer
         DisconnectDHCP,
         DisconnectInfoRemove,
         DisconnectBroadcast,
-        Close
+        Close,
+        RoutingMessage,
+        BroadcastNetworkInfo,
     }
 
     public class HostedGame : INotifyPropertyChanged
@@ -42,7 +46,7 @@ namespace LanPlayServer
         private const uint NetworkBaseAddress = 0x0a720000; // 10.114.0.0 (our "virtual network")
         private const uint NetworkSubnetMask  = 0xffff0000; // 255.255.0.0
 
-        private readonly ReaderWriterLockSlim _lock;
+        private readonly object _lock;
         private GameLockReason _lockReason;
         private readonly List<LdnSession> _players;
         private readonly VirtualDhcp      _dhcp;
@@ -56,17 +60,13 @@ namespace LanPlayServer
         {
             get
             {
-                _lock.EnterReadLock();
-
-                NetworkInfo result = _info;
-
-                _lock.ExitReadLock();
-
-                return result;
+                return _info;
             }
         }
 
         public string Id { get; }
+
+        public bool Closing { get; set; }
 
         public LdnSession Owner { get; private set; }
         public string OwnerId => Owner.StringId;
@@ -76,13 +76,7 @@ namespace LanPlayServer
         {
             get
             {
-                _lock.EnterReadLock();
-
-                string result = _passphrase;
-
-                _lock.ExitReadLock();
-
-                return result;
+                return _passphrase;
             }
         }
 
@@ -93,13 +87,7 @@ namespace LanPlayServer
         {
             get
             {
-                _lock.EnterReadLock();
-
-                string result = _gameVersion;
-
-                _lock.ExitReadLock();
-
-                return result;
+                return _gameVersion;
             }
             private set
             {
@@ -115,15 +103,7 @@ namespace LanPlayServer
         {
             get
             {
-                int result;
-
-                _lock.EnterReadLock();
-
-                result = _players.Count;
-
-                _lock.ExitReadLock();
-
-                return result;
+                return _players.Count;
             }
         }
 
@@ -144,48 +124,25 @@ namespace LanPlayServer
         {
             Id = id;
 
-            _lock    = new ReaderWriterLockSlim(LockRecursionPolicy.SupportsRecursion);
+            _lock = new object();
             _players = new List<LdnSession>();
-            _dhcp    = new VirtualDhcp(NetworkBaseAddress, NetworkSubnetMask, dhcpConfig);
+            _dhcp = new VirtualDhcp(NetworkBaseAddress, NetworkSubnetMask, dhcpConfig);
 
             UpdateNetworkInfo(info);
         }
 
-        public bool TestReadLock()
-        {
-            if (!_lock.TryEnterReadLock(2000))
-            {
-                Console.WriteLine($"Lock broken: {_lockReason} on {_info.NetworkId.IntentId.LocalCommunicationId:x16} with {_players.Count} players.");
-
-                return true;
-            }
-
-            _lock.ExitReadLock();
-
-            return false;
-        }
-
-        private void EnterLock(GameLockReason reason)
-        {
-            _lock.EnterWriteLock();
-            _lockReason = reason;
-        }
-
-        private void ExitLock()
-        {
-            _lockReason = GameLockReason.None;
-            _lock.ExitWriteLock();
-        }
-
         public void UpdateNetworkInfo(NetworkInfo info)
         {
-            EnterLock(GameLockReason.UpdateNetworkInfo);
+            lock (_lock)
+            {
+                _lockReason = GameLockReason.UpdateNetworkInfo;
 
-            _info = info;
+                _info = info;
 
-            NotifyPropertyChanged(nameof(Info));
+                NotifyPropertyChanged(nameof(Info));
 
-            ExitLock();
+                _lockReason = GameLockReason.None;
+            }
         }
 
         private byte[] AddressTo16Byte(IPAddress address)
@@ -200,44 +157,44 @@ namespace LanPlayServer
 
         public void SetOwner(LdnSession session, RyuNetworkConfig request)
         {
-            EnterLock(GameLockReason.SetOwner);
-
-            try
+            lock (_lock)
             {
-                Owner = session;
-                _passphrase = session.Passphrase;
+                _lockReason = GameLockReason.SetOwner;
 
-                GameVersion = Encoding.UTF8.GetString(request.GameVersion.AsSpan().ToArray(), 0, request.GameVersion.Length).Trim('\0');
-
-                if (request.ExternalProxyPort != 0)
+                try
                 {
-                    IsP2P = true;
+                    Owner = session;
+                    _passphrase = session.Passphrase;
 
-                    IPAddress address = (session.Socket.RemoteEndPoint as IPEndPoint).Address;
+                    GameVersion = Encoding.UTF8.GetString(request.GameVersion.AsSpan().ToArray(), 0, request.GameVersion.Length).Trim('\0');
 
-                    _externalConfig = new ExternalProxyConfig()
+                    if (request.ExternalProxyPort != 0)
                     {
-                        AddressFamily = address.AddressFamily,
-                        ProxyPort = request.ExternalProxyPort,
-                    };
+                        IsP2P = true;
 
-                    AddressTo16Byte(address).CopyTo(_externalConfig.ProxyIp.AsSpan());
+                        IPAddress address = (session.Socket.RemoteEndPoint as IPEndPoint).Address;
 
-                    _privateConfig = new ExternalProxyConfig()
-                    {
-                        ProxyIp = request.PrivateIp,
-                        AddressFamily = request.AddressFamily,
-                        ProxyPort = request.InternalProxyPort
-                    };
+                        _externalConfig = new ExternalProxyConfig()
+                        {
+                            AddressFamily = address.AddressFamily,
+                            ProxyPort = request.ExternalProxyPort,
+                        };
+
+                        AddressTo16Byte(address).CopyTo(_externalConfig.ProxyIp.AsSpan());
+
+                        _privateConfig = new ExternalProxyConfig()
+                        {
+                            ProxyIp = request.PrivateIp,
+                            AddressFamily = request.AddressFamily,
+                            ProxyPort = request.InternalProxyPort
+                        };
+                    }
+                }
+                finally
+                {
+                    _lockReason = GameLockReason.None;
                 }
             }
-            catch
-            {
-                ExitLock();
-                throw;
-            }
-
-            ExitLock();
         }
 
         private void InitExternalProxy(LdnSession session)
@@ -275,52 +232,59 @@ namespace LanPlayServer
 
         public bool Connect(LdnSession session, NodeInfo node)
         {
-            EnterLock(GameLockReason.Connect);
-
-            if (_closed || _info.Ldn.NodeCount == _info.Ldn.NodeCountMax)
+            lock (_lock)
             {
-                ExitLock();
+                try
+                {
+                    _lockReason = GameLockReason.Connect;
 
-                return false;
+                    if (_closed || _info.Ldn.NodeCount == _info.Ldn.NodeCountMax)
+                    {
+                        return false;
+                    }
+
+                    uint ip = _dhcp.RequestIpV4(session.MacAddress.AsSpan());
+                    if (!session.SetIpV4(ip, NetworkSubnetMask, !IsP2P))
+                    {
+                        _dhcp.ReturnIpV4(ip);
+                    }
+
+                    node.Ipv4Address = session.IpAddress;
+
+                    _lockReason = GameLockReason.ConnectNode;
+
+                    // Add the client to the network info.
+                    int nodeId = LocateEmptyNode();
+                    _info.Ldn.NodeCount++;
+
+                    node.NodeId = (byte)nodeId;
+                    session.NodeId = nodeId;
+
+                    _info.Ldn.Nodes[nodeId] = node;
+
+                    _lockReason = GameLockReason.ConnectProxy;
+                    if (IsP2P)
+                    {
+                        InitExternalProxy(session);
+                    }
+
+                    _lockReason = GameLockReason.ConnectBroadcast;
+                    BroadcastNetworkInfoInLock();
+
+                    session.CurrentGame = this;
+
+                    _players.Add(session);
+                    NotifyPropertyChanged(nameof(Players));
+
+                    _lockReason = GameLockReason.ConnectFinal;
+                    session.SendAsync(RyuLdnProtocol.Encode(PacketId.Connected, _info));
+
+                }
+                finally
+                {
+                    _lockReason = GameLockReason.None;
+                }
             }
-
-            uint ip = _dhcp.RequestIpV4(session.MacAddress.AsSpan());
-            if (!session.SetIpV4(ip, NetworkSubnetMask, !IsP2P))
-            {
-                _dhcp.ReturnIpV4(ip);
-            }
-
-            node.Ipv4Address = session.IpAddress;
-
-            _lockReason = GameLockReason.ConnectNode;
-
-            // Add the client to the network info.
-            int nodeId = LocateEmptyNode();
-            _info.Ldn.NodeCount++;
-
-            node.NodeId = (byte)nodeId;
-            session.NodeId = nodeId;
-
-            _info.Ldn.Nodes[nodeId] = node;
-
-            _lockReason = GameLockReason.ConnectProxy;
-            if (IsP2P)
-            {
-                InitExternalProxy(session);
-            }
-
-            _lockReason = GameLockReason.ConnectBroadcast;
-            BroadcastNetworkInfoInLock();
-
-            session.CurrentGame = this;
-
-            _players.Add(session);
-            NotifyPropertyChanged(nameof(Players));
-
-            _lockReason = GameLockReason.ConnectFinal;
-            session.SendAsync(RyuLdnProtocol.Encode(PacketId.Connected, _info));
-
-            ExitLock();
 
             return true;
         }
@@ -396,45 +360,54 @@ namespace LanPlayServer
 
             bool isBroadcast = destIp == _dhcp.BroadcastAddress;
 
-            _lock.EnterReadLock();
 
+
+            List<LdnSession> players;
+
+            lock (_lock)
+            {
+                _lockReason = GameLockReason.RoutingMessage;
+                players = new List<LdnSession>(_players);
+                _lockReason = GameLockReason.None;
+            }
             if (isBroadcast)
             {
-                _players.ForEach(player =>
+                players.ForEach(player =>
                 {
-                    action(player);
+                    {
+                        action(player);
+                    }
                 });
             }
             else
             {
-                LdnSession target = _players.FirstOrDefault(player => player.IpAddress == destIp);
+                LdnSession target = players.FirstOrDefault(player => player.IpAddress == destIp);
 
                 if (target != null)
                 {
                     action(target);
                 }
             }
-
-            _lock.ExitReadLock();
         }
 
         public void HandleReject(LdnSession sender, LdnHeader header, RejectRequest reject)
         {
             if (sender == Owner)
             {
-                EnterLock(GameLockReason.Reject);
-
-                if (reject.NodeId >= _players.Count)
+                lock (_lock)
                 {
-                    ExitLock();
+                    _lockReason = GameLockReason.Reject;
 
-                    sender.SendAsync(RyuLdnProtocol.Encode(PacketId.NetworkError, new NetworkErrorMessage() { Error = NetworkError.RejectFailed }));
-                }
-                else
-                {
-                    Disconnect(_players.FirstOrDefault(player => player.NodeId == reject.NodeId), false);
+                    if (reject.NodeId >= _players.Count)
+                    {
+                        sender.SendAsync(RyuLdnProtocol.Encode(PacketId.NetworkError, new NetworkErrorMessage() { Error = NetworkError.RejectFailed }));
+                    }
+                    else
+                    {
+                        Disconnect(_players.FirstOrDefault(player => player.NodeId == reject.NodeId), false);
+                    }
 
-                    ExitLock();
+                    _lockReason = GameLockReason.None;
                 }
             }
             else
@@ -449,13 +422,16 @@ namespace LanPlayServer
         {
             if (sender == Owner)
             {
-                EnterLock(GameLockReason.SetAcceptPolicy);
+                lock (_lock)
+                {
+                    _lockReason = GameLockReason.SetAcceptPolicy;
 
-                _info.Ldn.StationAcceptPolicy = (byte)policy.StationAcceptPolicy;
+                    _info.Ldn.StationAcceptPolicy = (byte)policy.StationAcceptPolicy;
 
-                BroadcastNetworkInfoInLock();
+                    BroadcastNetworkInfoInLock();
 
-                ExitLock();
+                    _lockReason = GameLockReason.None;
+                }
             }
         }
 
@@ -463,47 +439,51 @@ namespace LanPlayServer
         {
             if (sender == Owner)
             {
-                EnterLock(GameLockReason.SetAdvertiseData);
+                lock (_lock)
+                {
+                    _lockReason = GameLockReason.SetAdvertiseData;
 
-                _info.Ldn.AdvertiseDataSize = (ushort)data.Length;
+                    _info.Ldn.AdvertiseDataSize = (ushort)data.Length;
 
-                Array.Resize(ref data, 0x180);
+                    Array.Resize(ref data, 0x180);
 
-                data.CopyTo(_info.Ldn.AdvertiseData.AsSpan());
+                    data.CopyTo(_info.Ldn.AdvertiseData.AsSpan());
 
-                BroadcastNetworkInfoInLock();
+                    BroadcastNetworkInfoInLock();
 
-                ExitLock();
+                    _lockReason = GameLockReason.None;
+                }
             }
         }
 
         public void HandleExternalProxyState(LdnSession sender, LdnHeader header, ExternalProxyConnectionState state)
         {
-            EnterLock(GameLockReason.HandleExternalProxyState);
-
-            if (sender != Owner)
+            lock (_lock)
             {
-                // Only the owner can update external proxy state.
-                ExitLock();
+                _lockReason = GameLockReason.HandleExternalProxyState;
 
-                return;
-            }
-
-            LdnSession player = _players.FirstOrDefault(player => player.IpAddress == state.IpAddress);
-
-            if (player != null)
-            {
-                if (!state.Connected)
+                if (sender != Owner)
                 {
-                    // Indicate that the player is no longer connected to the game.
-
-                    player.SendAsync(RyuLdnProtocol.Encode(PacketId.Disconnect, new DisconnectMessage()));
-
-                    Disconnect(player, true);
+                    // Only the owner can update external proxy state.
+                    _lockReason = GameLockReason.None;
+                    return;
                 }
-            }
 
-            ExitLock();
+                LdnSession player = _players.FirstOrDefault(player => player.IpAddress == state.IpAddress);
+
+                if (player != null)
+                {
+                    if (!state.Connected)
+                    {
+                        // Indicate that the player is no longer connected to the game.
+
+                        player.SendAsync(RyuLdnProtocol.Encode(PacketId.Disconnect, new DisconnectMessage()));
+
+                        Disconnect(player, true);
+                    }
+                }
+                _lockReason = GameLockReason.None;
+            }
         }
 
         public void HandleProxyDisconnect(LdnSession sender, LdnHeader header, ProxyDisconnectMessage message)
@@ -540,43 +520,48 @@ namespace LanPlayServer
 
         private void DisconnectInternal(LdnSession session, bool expected)
         {
-            EnterLock(GameLockReason.Disconnect);
-
-            try
+            lock (_lock)
             {
-                _players.Remove(session);
-                NotifyPropertyChanged(nameof(Players));
+                _lockReason = GameLockReason.Disconnect;
 
-                session.CurrentGame = null;
-
-                if (IsP2P && !expected)
+                try
                 {
-                    Owner?.SendAsync(RyuLdnProtocol.Encode(PacketId.ExternalProxyState, new ExternalProxyConnectionState
+                    _players.Remove(session);
+                    NotifyPropertyChanged(nameof(Players));
+
+                    session.CurrentGame = null;
+
+                    if (IsP2P && !expected)
                     {
-                        IpAddress = session.IpAddress,
-                        Connected = false
-                    }));
+                        Owner?.SendAsync(RyuLdnProtocol.Encode(PacketId.ExternalProxyState, new ExternalProxyConnectionState
+                        {
+                            IpAddress = session.IpAddress,
+                            Connected = false
+                        }));
+                    }
+
+                    _lockReason = GameLockReason.DisconnectDHCP;
+
+                    _dhcp.ReturnIpV4(session.IpAddress);
+
+                    _lockReason = GameLockReason.DisconnectInfoRemove;
+
+                    // Remove the client from the network info.
+                    RemoveFromInfo(session.IpAddress);
+
+                    _lockReason = GameLockReason.DisconnectBroadcast;
+
+                    BroadcastNetworkInfoInLock();
                 }
-
-                _lockReason = GameLockReason.DisconnectDHCP;
-
-                _dhcp.ReturnIpV4(session.IpAddress);
-
-                _lockReason = GameLockReason.DisconnectInfoRemove;
-
-                // Remove the client from the network info.
-                RemoveFromInfo(session.IpAddress);
-
-                _lockReason = GameLockReason.DisconnectBroadcast;
-
-                BroadcastNetworkInfoInLock();
+                catch (Exception e)
+                {
+                    Console.WriteLine("SUPER FATAL ERROR: " + e);
+                }
+                finally
+                {
+                    _lockReason = GameLockReason.None;
+                }
             }
-            catch (Exception e)
-            {
-                Console.WriteLine("SUPER FATAL ERROR: " + e);
-            }
-
-            ExitLock();
         }
 
         public void Disconnect(LdnSession session, bool expected)
@@ -586,27 +571,18 @@ namespace LanPlayServer
                 return;
             }
 
-            if (_lock.IsReadLockHeld && !_lock.IsWriteLockHeld)
-            {
-                // Can't upgrade the lock, try disconnect in the background.
-                session.CurrentGame = null;
-
-                Task.Run(() => DisconnectInternal(session, expected));
-            }
-            else
-            {
-                DisconnectInternal(session, expected);
-            }
+            session.CurrentGame = null;
+            Task.Run(() => DisconnectInternal(session, expected));
         }
 
         // NOTE: Unused.
         private void BroadcastNetworkInfo()
         {
-            _lock.EnterReadLock();
-
-            BroadcastNetworkInfoInLock();
-
-            _lock.ExitReadLock();
+            lock (_lock)
+            {
+                _lockReason = GameLockReason.BroadcastNetworkInfo;
+                BroadcastNetworkInfoInLock();
+            }
         }
 
         private void BroadcastNetworkInfoInLock()
@@ -624,29 +600,49 @@ namespace LanPlayServer
 
         public void Close()
         {
-            if (_lock.IsReadLockHeld && !_lock.IsWriteLockHeld)
+            if (_closed)
             {
-                // Can't upgrade the lock, try close in the background.
-
-                Task.Run(Close);
+                return;
             }
-            else
+            Closing = true;
+            Task.Run(CloseInternal);
+        }
+
+        private void CloseInternal()
+        {
+            if (_closed)
             {
-                EnterLock(GameLockReason.Close);
-
-                Console.WriteLine($"CLOSING: {Id}");
-
-                _closed = true;
-
-                BroadcastInLock(RyuLdnProtocol.Encode(PacketId.Disconnect, new DisconnectMessage()));
-
-                ExitLock();
+                return;
             }
+            lock (_lock)
+            {
+                if (!_closed)
+                {
+                    _lockReason = GameLockReason.Close;
+
+                    Console.WriteLine($"CLOSING: {Id}");
+
+                    _closed = true;
+
+                    BroadcastInLock(RyuLdnProtocol.Encode(PacketId.Disconnect, new DisconnectMessage()));
+
+                    _lockReason = GameLockReason.None;
+                }
+            }
+            Statistics.RemoveGameAnalytics(this);
         }
 
         private void NotifyPropertyChanged([CallerMemberName] string propertyName = "")
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        }
+
+        public void TestReadLock()
+        {
+            if (_lockReason != GameLockReason.None)
+            {
+                Console.WriteLine($"{Id} locked: {_lockReason}");
+            }
         }
     }
 }

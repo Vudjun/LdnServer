@@ -50,6 +50,10 @@ namespace LanPlayServer.Stats
 
                 Task.Run(() => UpdateLdnAnalytics(Games.Values.ToImmutableList()));
             }
+            else
+            {
+                GameAnalyticsChanged?.Invoke(new GameAnalytics { Id = game.Id }, false);
+            }
         }
 
         private static void UpdateLdnAnalytics(ImmutableList<GameAnalytics> games)
@@ -89,14 +93,14 @@ namespace LanPlayServer.Stats
                 totalPlayerCount += game.PlayerCount;
             }
 
-            LdnAnalytics.TotalGameCount      = totalGameCount;
-            LdnAnalytics.PrivateGameCount    = privateGameCount;
-            LdnAnalytics.PublicGameCount     = totalGameCount - privateGameCount;
-            LdnAnalytics.InProgressCount     = inProgressCount;
-            LdnAnalytics.MasterProxyCount    = masterProxyCount;
-            LdnAnalytics.TotalPlayerCount    = totalPlayerCount;
-            LdnAnalytics.PrivatePlayerCount  = privatePlayerCount;
-            LdnAnalytics.PublicPlayerCount   = totalPlayerCount - privatePlayerCount;
+            LdnAnalytics.TotalGameCount = totalGameCount;
+            LdnAnalytics.PrivateGameCount = privateGameCount;
+            LdnAnalytics.PublicGameCount = totalGameCount - privateGameCount;
+            LdnAnalytics.InProgressCount = inProgressCount;
+            LdnAnalytics.MasterProxyCount = masterProxyCount;
+            LdnAnalytics.TotalPlayerCount = totalPlayerCount;
+            LdnAnalytics.PrivatePlayerCount = privatePlayerCount;
+            LdnAnalytics.PublicPlayerCount = totalPlayerCount - privatePlayerCount;
 
             LdnAnalyticsChanged?.Invoke(LdnAnalytics);
         }

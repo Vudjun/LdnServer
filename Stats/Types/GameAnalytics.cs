@@ -1,4 +1,5 @@
 ﻿using LanPlayServer.Utils;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -8,6 +9,7 @@ namespace LanPlayServer.Stats.Types
     public class GameAnalytics: INotifyPropertyChanged
     {
         private static readonly GameAnalyticsSerializerContext SerializerContext = new(JsonHelper.GetDefaultSerializerOptions(false));
+        private static readonly GameAnalyticsArraySerializerContext ArraySerializerContext = new(JsonHelper.GetDefaultSerializerOptions(false));
 
         public event PropertyChangedEventHandler PropertyChanged;
 
@@ -168,6 +170,10 @@ namespace LanPlayServer.Stats.Types
 
         private static void FromGame(GameAnalytics instance, HostedGame game)
         {
+            if (game.Closing)
+            {
+                return;
+            }
             ulong appId = (ulong)game.Info.NetworkId.IntentId.LocalCommunicationId;
             string gameName = GameList.GetGameById(appId)?.Name ?? "Unknown";
             var players = new List<string>();
@@ -180,6 +186,7 @@ namespace LanPlayServer.Stats.Types
                 name = name.CleanInput(32);
 
                 // Would like to add more player information here, but that needs a bit more work.
+
                 players.Add(name);
             }
 
@@ -207,6 +214,11 @@ namespace LanPlayServer.Stats.Types
             return JsonHelper.Serialize(this, SerializerContext.GameAnalytics);
         }
 
+        public static string ToJson(GameAnalytics[] instances)
+        {
+            return JsonHelper.Serialize(instances, ArraySerializerContext.GameAnalyticsArray);
+        }
+
         public static GameAnalytics FromGame(HostedGame game)
         {
             GameAnalytics analytics = new();
@@ -217,7 +229,7 @@ namespace LanPlayServer.Stats.Types
 
         private void NotifyPropertyChanged([CallerMemberName] string propertyName = "")
         {
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+            //PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         }
     }
 }

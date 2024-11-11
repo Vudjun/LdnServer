@@ -120,6 +120,7 @@ namespace LanPlayServer
 
             if (game?.Owner == this)
             {
+                game.Closing = true;
                 _tcpServer.CloseGame(game.Id);
             }
         }
@@ -226,15 +227,18 @@ namespace LanPlayServer
 
         protected override void OnDisconnected()
         {
-            lock (_connectionLock)
+            Task.Run(() =>
             {
-                _disconnected = true;
-                DisconnectFromGame();
-            }
+                lock (_connectionLock)
+                {
+                    _disconnected = true;
+                    DisconnectFromGame();
+                }
 
-            Console.WriteLine($"LDN TCP session with Id {Id} disconnected! ({PrintIp()})");
+                Console.WriteLine($"LDN TCP session with Id {Id} disconnected! ({PrintIp()})");
 
-            _protocol.Dispose();
+                _protocol.Dispose();
+            });
         }
 
         protected override void OnReceived(byte[] buffer, long offset, long size)
@@ -298,6 +302,7 @@ namespace LanPlayServer
 
         private void HandleScan(LdnHeader ldnPacket, ScanFilter filter)
         {
+            Thread.Sleep(200);
             int games = _tcpServer.Scan(ref _scanBuffer, filter, Passphrase, CurrentGame);
 
             for (int i = 0; i < games; i++)

@@ -4,6 +4,8 @@ services:
   redis:
     image: redis/redis-stack-server
     restart: always
+    networks:
+      - main
 
   ldn-server:
     build: ./
@@ -15,9 +17,12 @@ services:
       LDN_REDIS_PORT: 6379
     ports:
       - "30456:30456"
+    networks:
+      - main
 
-  website:
+  ryujinx-ldn-website:
     # NOTE: Make sure the website repo is cloned to this location and up to date
+    hostname: ryujinx-ldn-website
     build: ../ryujinx-ldn-website/
     environment:
       NODE_ENV: production
@@ -26,3 +31,23 @@ services:
       REDIS_URL: "redis://redis:6379"
     ports:
       - "8080:8080"
+    networks:
+      - main 
+
+  ryujinx-ldn-website2:
+    # NOTE: Make sure the website repo is cloned to this location and up to date
+    hostname: ryujinx-ldn-website2
+    build: ../ryujinx-ldn-website2/
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8080
+      REDIS_URL: "redis:6379"
+    #ports:
+    #  - "8080:8081"
+    networks:
+      - main
+
+networks:
+  main:
+    name: main
+    external: true

@@ -28,6 +28,7 @@ namespace LanPlayServer
             OptionNoDelay = true;
 
             Task.Run(BackgroundPingTask);
+            Task.Run(BackgroundDumpTask);
         }
 
         public HostedGame CreateGame(string id, NetworkInfo info, AddressList dhcpConfig, string oldOwnerID)
@@ -86,15 +87,17 @@ namespace LanPlayServer
 
             int results = 0;
 
+            int gameCount = all.Length;
+            int playerCount = 0;
+
             for (int i = 0; i < all.Length; i++)
             {
                 HostedGame game = all[i].Value;
 
-                if (game.TestReadLock())
-                {
-                    CloseGame(game.Id);
-                    continue;
-                }
+                game.TestReadLock();
+
+                int nPlayers = game.Players;
+                playerCount += nPlayers;
 
                 if (game.Passphrase != passphrase || game == exclude)
                 {
@@ -152,7 +155,7 @@ namespace LanPlayServer
                     }
                 }
 
-                if (game.Players == 0)
+                if (nPlayers == 0)
                 {
                     continue;
                 }
@@ -215,6 +218,22 @@ namespace LanPlayServer
                 catch (TaskCanceledException)
                 {
                     return;
+                }
+            }
+        }
+
+        private async Task BackgroundDumpTask()
+        {
+            while (!IsDisposed)
+            {
+                await Task.Delay(5000, _cancel.Token);
+                try
+                {
+                    await StatsDumper.DumpAll(_hostedGames);
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine(e);
                 }
             }
         }

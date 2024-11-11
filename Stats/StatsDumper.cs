@@ -1,10 +1,15 @@
 ﻿using LanPlayServer.Stats.Types;
+using LanPlayServer.Utils;
 using NRedisStack;
 using NRedisStack.RedisStackCommands;
 using StackExchange.Redis;
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Net;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Threading.Tasks;
 
 namespace LanPlayServer.Stats
 {
@@ -30,8 +35,8 @@ namespace LanPlayServer.Stats
 
             EnsureDBKeysExist(_db.JSON(), true);
 
-            Statistics.GameAnalyticsChanged += OnGameAnalyticsChanged;
-            Statistics.LdnAnalyticsChanged += OnLdnAnalyticsPropertyChanged;
+            //Statistics.GameAnalyticsChanged += OnGameAnalyticsChanged;
+            //Statistics.LdnAnalyticsChanged += OnLdnAnalyticsPropertyChanged;
         }
 
         private static void EnsureDBKeysExist(IJsonCommands json, bool overwrite = false)
@@ -42,8 +47,8 @@ namespace LanPlayServer.Stats
 
         public static void Stop()
         {
-            Statistics.GameAnalyticsChanged -= OnGameAnalyticsChanged;
-            Statistics.LdnAnalyticsChanged -= OnLdnAnalyticsPropertyChanged;
+            //Statistics.GameAnalyticsChanged -= OnGameAnalyticsChanged;
+            //Statistics.LdnAnalyticsChanged -= OnLdnAnalyticsPropertyChanged;
 
             _redisConnection.Close();
             _redisConnection.Dispose();
@@ -51,6 +56,7 @@ namespace LanPlayServer.Stats
 
         private static void OnLdnAnalyticsPropertyChanged(LdnAnalytics analytics)
         {
+            return;
             JsonCommands json = _db.JSON();
             string analyticsJson = analytics.ToJson();
 
@@ -60,25 +66,35 @@ namespace LanPlayServer.Stats
 
         private static void OnGameAnalyticsChanged(GameAnalytics analytics, bool created)
         {
+            return;
             JsonCommands json = _db.JSON();
-            string analyticsJson = analytics.ToJson();
 
             EnsureDBKeysExist(json);
 
             if (created)
             {
+                Console.WriteLine("Add game analytics for " + analytics.Id);
+                string analyticsJson = analytics.ToJson();
                 json.Set("games", $"$.{analytics.Id}", analyticsJson);
                 analytics.PropertyChanged += OnGameAnalyticsPropertyChanged;
             }
             else
             {
+                Console.WriteLine("Actually removing game analytics for " + analytics.Id);
                 analytics.PropertyChanged -= OnGameAnalyticsPropertyChanged;
-                json.Del("games", $"$.{analytics.Id}");
+                DeleteGameById(analytics.Id);
             }
+        }
+
+        private static void DeleteGameById(string id)
+        {
+            JsonCommands json = _db.JSON();
+            json.Del("games", $"$.{id}");
         }
 
         private static void OnGameAnalyticsPropertyChanged(object sender, PropertyChangedEventArgs e)
         {
+            return;
             GameAnalytics analytics = sender as GameAnalytics;
             JsonCommands json = _db.JSON();
 
@@ -91,14 +107,89 @@ namespace LanPlayServer.Stats
 
             if (analytics.PlayerCount == 0)
             {
-                json.Del("games", $"$.{analytics.Id}");
+                //DeleteGameById(analytics.Id);
                 return;
             }
+            Console.WriteLine("update for " + analytics.Id);
 
             string analyticsJson = analytics.ToJson();
 
             // This could be optimized to only update the changed property.
             json.Set("games", $"$.{analytics.Id}", analyticsJson);
+        }
+
+
+        public static async Task DumpAll(IDictionary<string, HostedGame> games) {
+            if (_db == null)
+            {
+                return;
+            }
+            var ldnAnalytics = new LdnAnalytics();
+
+            int totalGameCount     = 0;
+            int totalPlayerCount   = 0;
+            int privateGameCount   = 0;
+            int privatePlayerCount = 0;
+            int masterProxyCount   = 0;
+            int inProgressCount    = 0;
+
+            var json = _db.JSON();
+            var gamesList = new List<GameAnalytics>(games.Count);
+            foreach (var hostedGame in games) {
+                var game = new GameAnalytics();
+                game.Update(hostedGame.Value);
+
+                if (game.Id == null)
+                {
+                    continue;
+                }
+
+                if (game.PlayerCount == 0)
+                {
+                    continue;
+                }
+
+                if (game.Mode != "P2P")
+                {
+                    masterProxyCount++;
+                }
+
+                totalGameCount++;
+
+                if (!game.IsPublic)
+                {
+                    privateGameCount++;
+                    privatePlayerCount += game.PlayerCount;
+                }
+
+                if (game.Status != "Joinable")
+                {
+                    inProgressCount++;
+                }
+
+                totalPlayerCount += game.PlayerCount;
+                gamesList.Add(game);
+            }
+            var opts = new JsonSerializerOptions()
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
+            };
+
+            ldnAnalytics.TotalGameCount = totalGameCount;
+            ldnAnalytics.PrivateGameCount = privateGameCount;
+            ldnAnalytics.PublicGameCount = totalGameCount - privateGameCount;
+            ldnAnalytics.InProgressCount = inProgressCount;
+            ldnAnalytics.MasterProxyCount = masterProxyCount;
+            ldnAnalytics.TotalPlayerCount = totalPlayerCount;
+            ldnAnalytics.PrivatePlayerCount = privatePlayerCount;
+            ldnAnalytics.PublicPlayerCount = totalPlayerCount - privatePlayerCount;
+
+            var ldnJson = ldnAnalytics.ToJson();
+
+            var gamesJson = GameAnalytics.ToJson(gamesList.ToArray());
+
+            await json.SetAsync("games", "$", gamesJson);
+            await json.SetAsync("ldn", "$", ldnJson);
         }
     }
 }

@@ -70,6 +70,13 @@ namespace LanPlayServer.Utils
             return Encoding.UTF8.GetString(ms.ToArray());
         }
 
+        static string[] filterSlurs =
+        [
+            "\u004E\u0049\u0047\u0047\u0041",
+            "\u004E\u0049\u0047\u0047\u0045\u0052",
+            "\u0046\u0041\u0047\u0047\u004F\u0054"
+        ];
+
         public static string CleanInput(this string input, int maxLength = -1, string extraAllowedChars = "")
         {
             if (input == null)
@@ -85,11 +92,19 @@ namespace LanPlayServer.Utils
             }
 
             try {
-                return Regex.Replace(result, $@"[^\w-_{extraAllowedChars}]", "",
+                result = Regex.Replace(result, $@"[^\w-_{extraAllowedChars}]", "",
                     RegexOptions.IgnoreCase, TimeSpan.FromSeconds(2));
+                foreach (var word in filterSlurs)
+                {
+                    if (result.ToUpper().Contains(word))
+                    {
+                        return "***";
+                    }
+                }
+                return result;
             }
             catch (RegexMatchTimeoutException) {
-                return string.Empty;
+                return "---";
             }
         }
     }
