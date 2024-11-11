@@ -10,7 +10,7 @@
 
   <ItemGroup>
     <PackageReference Include="NetCoreServer" Version="8.0.7" />
-    <PackageReference Include="NRedisStack" Version="0.11.0" />
+    <PackageReference Include="NRedisStack" Version="0.13.0" />
   </ItemGroup>
   
   <ItemGroup>
